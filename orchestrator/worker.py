@@ -23,6 +23,7 @@ from orchestrator.pipeline import (
     pass_run,
     record_artifact,
     spawn_retry_or_fail_task,
+    spawn_rework_or_fail_task,
 )
 from orchestrator.schemas import ContextPack, GateDecision, ReviewResult, TaskSpec, WorkItem
 from orchestrator.security import evaluate_security
@@ -80,11 +81,18 @@ def handle_frontend(session: Session, task: Task, run: Run) -> None:
 
 def handle_qa(session: Session, task: Task, run: Run, target_stage: Stage) -> None:
     ctx = _context_for(task, run.stage)
-    result = llm.call("QA", ctx.dict())
-    review = ReviewResult(stage=run.stage, passed=True, issues=[], suggestions=[])
+    result = llm.call("QA", {"context": ctx.dict(), "target_stage": target_stage.value})
+    passed = bool(result.get("passed", True))
+    issues = result.get("issues", [])
+    suggestions = result.get("suggestions", [])
+    review = ReviewResult(stage=run.stage, passed=passed, issues=issues, suggestions=suggestions)
     review_payload = {"llm": result, "review": review.dict()}
     record_artifact(session, task, run, f"QA-{target_stage.value}", review_payload)
-    pass_run(session, run, review_payload)
+    if passed:
+        pass_run(session, run, review_payload)
+    else:
+        fail_run(session, run, "QA reported failures")
+        spawn_rework_or_fail_task(session, task, target_stage, run.max_attempts)
 
 
 def handle_security(session: Session, task: Task, run: Run) -> None:
@@ -96,17 +104,19 @@ def handle_security(session: Session, task: Task, run: Run) -> None:
         pass_run(session, run, review.dict())
     else:
         fail_run(session, run, "Security issues found")
-        spawn_retry_or_fail_task(session, task, run)
+        spawn_rework_or_fail_task(session, task, Stage.BACKEND, run.max_attempts)
 
 
-def handle_gate(session: Session, task: Task, run: Run, gate_check: Callable[[Task], GateDecision]) -> None:
+def handle_gate(
+    session: Session, task: Task, run: Run, gate_check: Callable[[Task], GateDecision], rework_stage: Stage
+) -> None:
     decision = gate_check(task)
     record_artifact(session, task, run, f"Gate-{decision.gate.value}", decision.dict())
     if decision.passed:
         pass_run(session, run, decision.dict())
     else:
         fail_run(session, run, decision.details or "Gate not ready")
-        spawn_retry_or_fail_task(session, task, run)
+        spawn_rework_or_fail_task(session, task, rework_stage, run.max_attempts)
 
 
 def handle_docs(session: Session, task: Task, run: Run) -> None:
@@ -166,12 +176,12 @@ HANDLERS: Dict[Stage, Callable[[Session, Task, Run], None]] = {
     Stage.BACKEND: handle_backend,
     Stage.QA_BACKEND: lambda s, t, r: handle_qa(s, t, r, Stage.BACKEND),
     Stage.SECURITY: handle_security,
-    Stage.BACKEND_GATE: lambda s, t, r: handle_gate(s, t, r, is_backend_gate_ready),
+    Stage.BACKEND_GATE: lambda s, t, r: handle_gate(s, t, r, is_backend_gate_ready, Stage.BACKEND),
     Stage.FRONTEND: handle_frontend,
     Stage.QA_FRONTEND: lambda s, t, r: handle_qa(s, t, r, Stage.FRONTEND),
-    Stage.FRONTEND_GATE: lambda s, t, r: handle_gate(s, t, r, is_frontend_gate_ready),
+    Stage.FRONTEND_GATE: lambda s, t, r: handle_gate(s, t, r, is_frontend_gate_ready, Stage.FRONTEND),
     Stage.DOCS: handle_docs,
-    Stage.DOCS_GATE: lambda s, t, r: handle_gate(s, t, r, is_docs_gate_ready),
+    Stage.DOCS_GATE: lambda s, t, r: handle_gate(s, t, r, is_docs_gate_ready, Stage.DOCS),
     Stage.CI_WAIT: handle_ci_wait,
     Stage.HUMAN_APPROVAL: handle_human_approval,
     Stage.MERGE: handle_merge,
@@ -198,8 +208,6 @@ def process_run(session: Session, run: Run) -> None:
         return
     if run.status == RunStatus.PASS:
         enqueue_next(session, task, run, run.max_attempts)
-    elif run.status == RunStatus.FAIL:
-        spawn_retry_or_fail_task(session, task, run)
 
 
 def run_once() -> bool:

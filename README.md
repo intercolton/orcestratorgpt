@@ -54,7 +54,7 @@ wms-orchestrator/
 - `GET /health` — healthcheck.
 
 ## Pipeline
-Последовательность стадий: `PRODUCT -> ORCHESTRATE -> (BACKEND -> QA -> SECURITY -> BACKEND_GATE) -> (FRONTEND -> QA -> FRONTEND_GATE) -> DOCS -> DOCS_GATE -> CI_WAIT -> HUMAN_APPROVAL -> MERGE -> DONE`. Реворки до 3 попыток на каждый stage; при исчерпании попыток задача переводится в FAILED. HUMAN_APPROVAL требует явного решения в таблице decisions.
+Последовательность стадий: `PRODUCT -> ORCHESTRATE -> (BACKEND -> QA -> SECURITY -> BACKEND_GATE) -> (FRONTEND -> QA -> FRONTEND_GATE) -> DOCS -> DOCS_GATE -> CI_WAIT -> HUMAN_APPROVAL -> MERGE -> DONE`. Реворки до 3 попыток на каждый stage: провал QA или Security возвращает на соответствующий BACKEND/FRONTEND run, gate-фейлы возвращают на Docs/Backend/Frontend; при исчерпании попыток задача переводится в FAILED. HUMAN_APPROVAL требует явного решения в таблице decisions.
 
 ## Примеры JSON
 ### TaskSpec

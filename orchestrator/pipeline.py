@@ -5,7 +5,17 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from orchestrator.models import Artifact, Decision, DecisionKind, DecisionValue, Run, RunStatus, Stage, Task, TaskStatus
+from orchestrator.models import (
+    Artifact,
+    Decision,
+    DecisionKind,
+    DecisionValue,
+    Run,
+    RunStatus,
+    Stage,
+    Task,
+    TaskStatus,
+)
 from orchestrator.schemas import ContextPack, GateDecision, ReviewResult, TaskSpec, WorkItem
 from orchestrator.util import logger
 
@@ -82,6 +92,28 @@ def spawn_retry_or_fail_task(session: Session, task: Task, run: Run) -> None:
         session.add(task)
 
 
+def spawn_rework_or_fail_task(session: Session, task: Task, target_stage: Stage, max_attempts: int) -> None:
+    """Return control to an earlier stage (e.g., Backend/Frontend/Docs) or fail the task."""
+    attempts = max((r.attempt for r in task.runs if r.stage == target_stage), default=0)
+    if attempts < max_attempts:
+        logger.info("Reworking stage %s for task %s (attempt %s)", target_stage, task.id, attempts + 1)
+        session.add(
+            Run(
+                task_id=task.id,
+                stage=target_stage,
+                status=RunStatus.PENDING,
+                attempt=attempts + 1,
+                max_attempts=max_attempts,
+            )
+        )
+        task.status = TaskStatus.RUNNING
+        session.add(task)
+    else:
+        task.status = TaskStatus.FAILED
+        logger.error("Task %s exhausted attempts for stage %s", task.id, target_stage)
+        session.add(task)
+
+
 def enqueue_next(session: Session, task: Task, current: Run, max_attempts: int) -> None:
     next_stage = next_stage_after(current.stage)
     if not next_stage:
@@ -141,6 +173,7 @@ __all__ = [
     "fail_run",
     "pass_run",
     "spawn_retry_or_fail_task",
+    "spawn_rework_or_fail_task",
     "enqueue_next",
     "is_backend_gate_ready",
     "is_frontend_gate_ready",
