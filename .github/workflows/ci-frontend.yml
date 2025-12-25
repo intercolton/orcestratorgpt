@@ -1,0 +1,36 @@
+name: Frontend CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect frontend
+        id: detect
+        run: |
+          if [ -d frontend ] || [ -d apps/web ]; then
+            echo "run_ci=true" >> $GITHUB_OUTPUT
+          else
+            echo "run_ci=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Set up Node.js
+        if: steps.detect.outputs.run_ci == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install deps
+        if: steps.detect.outputs.run_ci == 'true'
+        run: |
+          if [ -d frontend ]; then cd frontend && npm ci; fi
+          if [ -d apps/web ]; then cd apps/web && npm ci; fi
+      - name: Build/Test
+        if: steps.detect.outputs.run_ci == 'true'
+        run: |
+          if [ -d frontend ]; then cd frontend && npm test -- --watch=false && npm run build; fi
+          if [ -d apps/web ]; then cd apps/web && npm test -- --watch=false && npm run build; fi
+      - name: Skip frontend CI
+        if: steps.detect.outputs.run_ci == 'false'
+        run: echo "No frontend folder; skipping"
